@@ -1,0 +1,4 @@
+beautifulsoup4==4.14.3
+boto3==1.42.14
+playwright==1.57.0
+requests==2.32.5
