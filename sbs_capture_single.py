@@ -1,55 +1,5 @@
 #!/usr/bin/env python3
-"""Выгрузка поисковой выдачи картинок и видео в HTML и S3, в одном файле.
-
-Установка зависимостей (Python 3.10+):
-    python -m pip install beautifulsoup4==4.14.3 boto3==1.42.14 playwright==1.57.0 requests==2.32.5
-Для видео также установите браузер:
-    python -m playwright install chromium
-
-Входной JSON — объект, массив объектов или JSONL:
-    [{"query": "горный пейзаж", "region_id": 213, "device": "DESKTOP"}]
-Устройства: DESKTOP, ANDROID, IPHONE.
-
-Запуск с настройками картинок, встроенными ниже в DEFAULT_CONFIG:
-    python sbs_capture_single.py --input queries.json --output runs-manual
-С отдельным конфигом:
-    python sbs_capture_single.py --input queries.json --config config.images.standard.json --output runs-manual
-Видео:
-    python sbs_capture_single.py --input queries.json --service video --output runs-manual
-Локальная проверка без S3:
-    python sbs_capture_single.py --input queries.json --local-only --output runs-manual
-
-Доступ к S3: AWS_ACCESS_KEY_ID и AWS_SECRET_ACCESS_KEY в окружении
-или стандартный AWS_PROFILE. Ключи в этот файл не записываются.
-В конфиге можно менять host, test_ids, cgi, desktop_min_items,
-desktop_max_pages и настройки s3. Входной JSON задаёт запрос и регион.
-
-Результат: runs-manual/<идентификатор запуска>/results.json и JSONL в stdout.
-Для успешных загрузок поле s3_url содержит проверенную публичную ссылку.
-Также ссылка печатается отдельной строкой HTML: в терминале (stderr),
-а все публичные ссылки сохраняются в urls.txt рядом с results.json.
-Также сохраняются HTML и метаданные каждого запроса. Ошибка одного запроса
-не прерывает остальные. Код выхода: 0 — успех, 1 — ошибки отдельных
-запросов, 2 — ошибка настройки или запуска.
-
-Desktop: цель 90 картинок, максимум 5 страниц; последняя страница целиком.
-Если выдача закончилась раньше, фактическое число отражается в метаданных.
-Мобильная выдача и видео сохраняются с одной страницы.
-Просмотрщик картинок сохраняет исходную механику и ссылки на сайт-источник.
-Обязательное правило каждой выгрузки: блюр отключён у всех изображений —
-в выдаче, миниатюрах видео и просмотрщике, на DESKTOP, ANDROID и IPHONE.
-Это правило действует также для --html; включить блюр через конфиг нельзя.
-Параметр remove_blur принудительно равен true, даже если внешний конфиг
-содержит remove_blur: false.
-Картинки сохраняются как в yandex old: исходные URL миниатюр, оригиналов,
-стилей и скриптов остаются в HTML, а ресурсы загружает браузер при просмотре.
-При выгрузке картинок скрипт не скачивает изображения или таблицы стилей
-и не встраивает их в base64. Недоступность отдельного оригинала не мешает
-сохранить HTML. Блюр отключается в состоянии приложения, CSS и JavaScript.
-Полноразмерные изображения, шрифты и
-оригинальные скрипты просмотрщика могут требовать подключения к интернету.
-Собственные CSS и JavaScript встроены ниже; соседние файлы проекта не нужны.
-"""
+"""Выгрузка выдачи Яндекс Картинок в HTML и S3. Инструкция: RUN_RU.md."""
 
 from dataclasses import dataclass, asdict
 from urllib.parse import urlsplit, urlunsplit, parse_qsl, urlencode
@@ -96,8 +46,6 @@ DEFAULT_CONFIG = json.loads(r'''{
 }''')
 
 NO_BLUR_CSS = r'''
-/* Mandatory for every export, including dynamically opened viewers.
-   Clear filters on ancestors too: a sharp img can inherit a blurred wrapper. */
 html[data-sbs-unblur="true"],html[data-sbs-unblur="true"] *,
 html[data-sbs-unblur="true"] *::before,html[data-sbs-unblur="true"] *::after{
   -webkit-filter:none!important;filter:none!important;
@@ -106,7 +54,6 @@ html[data-sbs-unblur="true"] *::before,html[data-sbs-unblur="true"] *::after{
 '''
 
 NATIVE_CSS = NO_BLUR_CSS + r'''
-/* Mobile frame and viewer sizing from the supplied Yandex Old reference. */
 html[data-sbs-device="ANDROID"],html[data-sbs-device="IPHONE"]{background:#d0d0d0!important}
 html:not([data-sbs-device="DESKTOP"]) body{max-width:390px!important;min-height:844px!important;margin:0 auto!important;overflow-x:hidden!important;box-shadow:0 0 40px rgba(0,0,0,.5);position:relative}
 html:not([data-sbs-device="DESKTOP"]) .ViewerScene{width:min(390px,100vw)!important;left:max(0px,calc((100vw - 390px)/2))!important;right:auto!important}
@@ -117,8 +64,6 @@ html:not([data-sbs-device="DESKTOP"]) .ViewerScene{width:min(390px,100vw)!import
 '''
 
 NATIVE_JS = r'''
-/* The native app owns opening, closing, swiping, title, domain and source URL.
-   This adapter freezes capture controls, enforces no blur and forwards arrows. */
 (() => {
   'use strict';
   const snapshotPath = location.pathname;
@@ -141,16 +86,12 @@ NATIVE_JS = r'''
     }
     return url.href;
   }
-  // A saved S3 path is not an image-search API. Keep native resource requests
-  // and modifier-click destinations on the configured source host.
   const open = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function(method, url, ...args) {
     return open.call(this, method, sourceURL(url), ...args);
   };
   function prepare() {
     const filters = ['filter', '-webkit-filter', 'backdrop-filter', '-webkit-backdrop-filter'];
-    // Inline overrides also beat highly specific native !important selectors.
-    // Reset every ancestor: parent filters blur all of their children.
     const imageLayers = new Set();
     document.querySelectorAll('img,picture,video,canvas,[class*="Image"],[class*="Thumb"]').forEach(image => {
       for (let el = image; el; el = el.parentElement) imageLayers.add(el);
@@ -162,7 +103,6 @@ NATIVE_JS = r'''
         }
       }
     });
-    // Native scripts can restore an inline filter after hydration or swiping.
     document.querySelectorAll('[style]').forEach(el => {
       for (const property of filters) {
         if (/blur\s*\(/i.test(el.style.getPropertyValue(property))) {
@@ -207,10 +147,6 @@ VIDEO_CSS = NO_BLUR_CSS + r'''
 #sbs-banner{position:relative;z-index:10;padding:9px 16px;background:#fff8d8;color:#433c26;font:13px/1.4 system-ui;border-bottom:1px solid #e7dbad;overflow-wrap:anywhere}
 '''
 
-
-# ========================================================================
-# models
-# ========================================================================
 
 @dataclass(frozen=True)
 class Query:
@@ -283,10 +219,6 @@ def search_url(task, config):
     return urlunsplit((p.scheme, p.netloc, path, urlencode(q, doseq=True), ""))
 
 
-# ========================================================================
-# parser
-# ========================================================================
-
 class ParseError(ValueError):
     pass
 
@@ -324,7 +256,6 @@ def parse_images(soup, base):
         keys = items.get("keys", list(entities))
         if entities:
             return [image_item(entities[k], i, base) for i, k in enumerate(keys) if k in entities]
-    # Legacy BEM layout. Keep DOM order, including repeated images.
     found = []
     for node in soup.select("[data-bem]"):
         try:
@@ -351,7 +282,6 @@ def parse(html, service, base):
 
 
 def parse_videos(soup, base):
-    # DOM is authoritative after hydration. The initial data-state can be empty.
     runtime_node = soup.select_one("#UniAppVideo-PreloadedState")
     try:
         runtime_state = json.loads(runtime_node.get_text()) if runtime_node else {}
@@ -412,10 +342,6 @@ def normalize_videos(records, base):
     return items
 
 
-# ========================================================================
-# pagination
-# ========================================================================
-
 def native_state(soup):
     root = soup.select_one('[id^="ImagesApp"][data-state]')
     if root is None:
@@ -440,7 +366,6 @@ def next_page_url(link, current_url, initial_url):
     previous = parse_qs(urlsplit(current_url).query).get('p', ['0'])
     if len(page) != 1 or not page[0].isdigit() or int(page[0]) <= int(previous[0]):
         raise ParseError('Pagination did not advance to the next page')
-    # Next links sometimes omit experimental parameters; retain the full input.
     pairs = [(k, v) for k, v in parse_qsl(candidate.query, keep_blank_values=True)
              if k not in source or k == 'p']
     pairs.extend((k, v) for k, v in parse_qsl(initial.query, keep_blank_values=True) if k != 'p')
@@ -484,8 +409,6 @@ def collect_desktop(soup, items, initial_url, fetch_page, minimum, max_pages):
             break
 
     combined['items']['keys'] = keys
-    # Native desktop HTML starts with a skeleton; React lays out these records
-    # at the actual display width and keeps its own original viewer handlers.
     combined['lastPage'] = latest.get('lastPage', combined.get('lastPage', 0))
     combined['loadNextState'] = 'finished'
     combined['prefetchNext'] = False
@@ -502,10 +425,6 @@ def collect_desktop(soup, items, initial_url, fetch_page, minimum, max_pages):
         'stop_reason': stop_reason,
     }
 
-
-# ========================================================================
-# capture
-# ========================================================================
 
 class Capture:
     def __init__(self, playwright, config):
@@ -528,8 +447,6 @@ class Capture:
         profile.pop("default_browser_type", None)
         profile.update(locale="ru-RU", timezone_id="Europe/Moscow")
         if service == "images":
-            # Preserve the server document and its native application startup.
-            # Serializing an initialized DOM breaks BEM routing on reopening.
             ua = profile.get("user_agent") or self.p.devices["Desktop Chrome"]["user_agent"]
             def fetch_page(page_url):
                 response = requests.get(page_url, headers={"User-Agent": ua, "Accept-Language": "ru-RU,ru;q=0.9"},
@@ -567,7 +484,6 @@ class Capture:
                 page.wait_for_selector(selector, state="attached", timeout=timeout * 1000)
             except BrowserTimeout:
                 raise ParseError("No rendered result cards. CAPTCHA, empty result or unsupported layout; no page published") from None
-            # Wait until layout and structured data agree, rather than a fixed screenshot delay.
             deadline, last_error = time.monotonic() + timeout, None
             while time.monotonic() < deadline:
                 try:
@@ -595,10 +511,6 @@ class Capture:
         finally:
             context.close()
 
-
-# ========================================================================
-# render
-# ========================================================================
 
 class Assets:
     def __init__(self):
@@ -640,14 +552,11 @@ def absolute_css(text, base):
         if value.startswith(("data:", "#")):
             return m.group(0)
         return 'url("' + urljoin(base, value).replace('"', '%22') + '")'
-    # Remove source blur before embedding, including inline !important rules
-    # and CSS variables that might otherwise beat the mandatory override.
     text = re.sub(r"\bblur\([^()]*\)", "blur(0)", text, flags=re.IGNORECASE)
     return re.sub(r"url\(([^)]+)\)", replace, text)
 
 
 def clear_blur_flags(value):
-    """Disable image censorship in every saved native state, without a toggle."""
     if isinstance(value, dict):
         for key, child in value.items():
             if key in {"censored", "censoredShock", "censored_shock", "isCensored",
@@ -690,7 +599,6 @@ def render(soup, items, task, service, base, assets):
         poster.replace_with(img)
         bound.extend(links)
 
-    # Remove original app runtime and tracking: video links point directly to their source.
     for node in soup.select("script, iframe, object, embed, noframes, base, link[rel=preload], link[rel=modulepreload], link[rel=prefetch], .YndxBug, #yndxbug, .TechTool, .DevToolsPanel, .MessageBox_layout_tooltip, [role=tooltip]"):
         node.decompose()
     for meta in soup.select("meta[http-equiv]"):
@@ -722,7 +630,6 @@ def render(soup, items, task, service, base, assets):
         style.string = text
         link.replace_with(style)
 
-    # Cache the displayed images in the HTML: no expiring thumbnail links on S3.
     images = [img for img in soup.select("img[src]") if not img["src"].startswith("data:")]
     urls = list(dict.fromkeys(img["src"] for img in images))
     with ThreadPoolExecutor(max_workers=6) as pool:
@@ -749,10 +656,6 @@ def render(soup, items, task, service, base, assets):
                        "source_blur_preserved": False, "remove_blur": True}
 
 
-# ========================================================================
-# native
-# ========================================================================
-
 def render_native(soup, items, task, base, assets):
 
     root = soup.select_one('[id^="ImagesApp"][data-state]')
@@ -760,24 +663,17 @@ def render_native(soup, items, task, base, assets):
         raise ParseError("Native image viewer runtime is missing; capture the original HTML again")
     state = json.loads(root['data-state'])
     records = state['initialState']['serpList']['items']['entities']
-    # Match yandex old: keep native thumbnail and original URLs. The browser
-    # loads them when displaying the saved page; export never fetches them.
     for item in items:
         record = records[item.id]
         viewer = record.get('viewerData', {})
         record['censored'] = False
         viewer['censored'] = False
     clear_blur_flags(state)
-    # Source JSON may contain an unpaired UTF-16 surrogate. Keep it escaped
-    # so the HTML remains valid UTF-8 and JSON.parse receives the same value.
     root['data-state'] = json.dumps(state, ensure_ascii=True, separators=(',', ':'))
 
-    # Do not strip application state, native scripts, event handlers or image
-    # links: these are required for the production viewer and its information.
     for node in soup.select('base, meta[http-equiv], iframe, #init-metrika, #aab-d'):
         node.decompose()
     for node in soup.find_all(True):
-        # BEM nodes and other native roots can carry their own censor flags.
         for attr in ('data-state', 'data-bem'):
             if attr not in node.attrs:
                 continue
@@ -804,7 +700,6 @@ def render_native(soup, items, task, base, assets):
     for style in soup.select('style'):
         style.string = absolute_css(style.get_text(), base)
     links = soup.select('link[rel="stylesheet"][href]')
-    # Keep stylesheet links just like the reference; no asset download here.
 
     soup.html['data-sbs-device'] = task.device
     soup.html['data-sbs-source'] = base
@@ -824,10 +719,6 @@ def render_native(soup, items, task, base, assets):
                       'source_blur_preserved': False, 'remove_blur': True}
 
 
-# ========================================================================
-# storage
-# ========================================================================
-
 class Storage:
     def __init__(self, config):
         self.config = config
@@ -836,7 +727,6 @@ class Storage:
         if not self.prefix or ".." in self.prefix.split("/"):
             raise ValueError("A nonempty, safe S3 prefix is required")
         self.endpoint = config["endpoint"].rstrip("/")
-        # Credentials come only from standard AWS environment/profile providers.
         self.client = boto3.client("s3", endpoint_url=self.endpoint,
             region_name=config.get("region", "ru-1"),
             config=Config(signature_version="s3v4", s3={"addressing_style": "path"},
@@ -854,17 +744,12 @@ class Storage:
         self.client.put_object(**args)
         public_base = self.config.get("public_base_url", f"{self.endpoint}/{self.bucket}").rstrip("/")
         url = public_base + "/" + quote(full_key, safe="/")
-        # Do not report a URL as successful until anonymous readback matches.
         response = requests.get(url, timeout=(15, 45))
         response.raise_for_status()
         if response.content != body or "text/html" not in response.headers.get("Content-Type", ""):
             raise ValueError("S3 readback does not match uploaded HTML")
         return url
 
-
-# ========================================================================
-# CLI
-# ========================================================================
 
 def safe_error(error):
     text = str(error)
@@ -888,7 +773,6 @@ def main():
         config = json.loads(Path(args.config).read_text(encoding="utf-8")) if args.config else json.loads(json.dumps(DEFAULT_CONFIG))
         if not isinstance(config, dict):
             raise ValueError("Config must be a JSON object")
-        # Mandatory for every export, including old configs with false.
         config["remove_blur"] = True
         if args.service:
             config["service"] = args.service
