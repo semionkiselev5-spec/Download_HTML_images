@@ -13,6 +13,7 @@
     "region": "ru-1",
     "bucket": "bac33a93-fc8a-445a-b967-41d71601c7a5",
     "prefix": "sbs-capture",
-    "acl": "public-read"
+    "acl": "private",
+    "url_ttl_seconds": 604800
   }
 }

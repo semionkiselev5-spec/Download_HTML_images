@@ -41,7 +41,8 @@ DEFAULT_CONFIG = json.loads(r'''{
     "region": "ru-1",
     "bucket": "bac33a93-fc8a-445a-b967-41d71601c7a5",
     "prefix": "sbs-capture",
-    "acl": "public-read"
+    "acl": "private",
+    "url_ttl_seconds": 604800
   }
 }''')
 
@@ -726,6 +727,10 @@ class Storage:
         self.prefix = config.get("prefix", "sbs-capture").strip("/")
         if not self.prefix or ".." in self.prefix.split("/"):
             raise ValueError("A nonempty, safe S3 prefix is required")
+        self.url_ttl_seconds = config.get("url_ttl_seconds", 604800)
+        if type(self.url_ttl_seconds) is not int or not 1 <= self.url_ttl_seconds <= 604800:
+            raise ValueError("s3.url_ttl_seconds must be an integer from 1 to 604800 (7 days)")
+        self.acl = config.get("acl", "private")
         self.endpoint = config["endpoint"].rstrip("/")
         self.client = boto3.client("s3", endpoint_url=self.endpoint,
             region_name=config.get("region", "ru-1"),
@@ -737,22 +742,29 @@ class Storage:
         body = html.encode("utf-8")
         args = dict(Bucket=self.bucket, Key=full_key, Body=body,
                     ContentType="text/html; charset=utf-8", ContentDisposition="inline",
-                    CacheControl="public, max-age=31536000, immutable",
+                    CacheControl="no-store",
                     Metadata={"sha256": hashlib.sha256(body).hexdigest()})
-        if self.config.get("acl"):
-            args["ACL"] = self.config["acl"]
+        if self.acl:
+            args["ACL"] = self.acl
         self.client.put_object(**args)
-        public_base = self.config.get("public_base_url", f"{self.endpoint}/{self.bucket}").rstrip("/")
-        url = public_base + "/" + quote(full_key, safe="/")
-        response = requests.get(url, timeout=(15, 45))
+        url = self.client.generate_presigned_url("get_object",
+            Params={"Bucket": self.bucket, "Key": full_key},
+            ExpiresIn=self.url_ttl_seconds, HttpMethod="GET")
+        self._readback(url, body)
+        return url
+
+    @staticmethod
+    def _readback(url, body):
+        response = requests.get(url, timeout=(15, 45), allow_redirects=False)
         response.raise_for_status()
         if response.content != body or "text/html" not in response.headers.get("Content-Type", ""):
             raise ValueError("S3 readback does not match uploaded HTML")
-        return url
 
 
 def safe_error(error):
     text = str(error)
+    text = re.sub(r'([?&](?:X-Amz-[A-Za-z-]+|AWSAccessKeyId|Signature)=)[^&\s]+',
+                  r'\1[redacted]', text, flags=re.IGNORECASE)
     for key, value in os.environ.items():
         if value and any(word in key.upper() for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")):
             text = text.replace(value, "[redacted]")
@@ -800,7 +812,8 @@ def main():
     output = Path(args.output).resolve() / run_id
     output.mkdir(parents=True, exist_ok=False)
     if storage:
-        print('Режим: публикация HTML в S3; публичные ссылки будут в строках HTML: и urls.txt.',
+        print(f'Режим: публикация HTML в S3; подписанные ссылки действуют до {storage.url_ttl_seconds} секунд '
+              'и будут в строках HTML: и urls.txt.',
               file=sys.stderr, flush=True)
     else:
         print('Режим: локальное сохранение (--local-only); публичные ссылки не создаются.',
