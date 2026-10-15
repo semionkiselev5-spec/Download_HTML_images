@@ -11,7 +11,7 @@ git clone https://github.com/semionkiselev5-spec/Download_HTML_images.git
 cd Download_HTML_images
 ```
 
-Создайте и активируйте виртуальное окружение по [подробной инструкции](RUN_RU.md), затем установите зависимости:
+Создайте и активируйте виртуальное окружение по [короткой инструкции](RUN_RU.md), затем установите зависимости:
 
 ```bash
 python -m pip install -r requirements.txt
@@ -44,6 +44,6 @@ python sbs_capture_single.py --input "my_queries.json" --config config.images.st
 | [input.json](input.json) | Пример списка запросов; замените его содержимое на своё |
 | [config.images.standard.json](config.images.standard.json) | Настройки выдачи и S3 |
 | [.env.example](.env.example) | Пустой шаблон ключей S3; подключается вручную |
-| [RUN_RU.md](RUN_RU.md) | Полная инструкция для macOS, Linux и Windows |
+| [RUN_RU.md](RUN_RU.md) | Короткая инструкция для macOS, Linux и Windows |
 
-Скрипт принимает объект, массив объектов или JSONL с полями `query`, `region_id`, `device`. Поддерживаемые устройства: `DESKTOP`, `ANDROID`, `IPHONE`. Подробные примеры, настройки и описание результатов находятся в [RUN_RU.md](RUN_RU.md).
+Скрипт принимает объект, массив объектов или JSONL с полями `query`, `region_id`, `device`. Поддерживаемые устройства: `DESKTOP`, `ANDROID`, `IPHONE`. Запуск со своим JSON описан в [RUN_RU.md](RUN_RU.md).
